@@ -1,0 +1,2053 @@
+---
+title: "Microbial tsunami phyloseq analysis with 16S dataset"
+author: "Yap Wenshu"
+date: "8/28/2020"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+# 1 Aim
+This is a the complete script to produce phyloseq files, plots and statistical analysis for the manuscript titled Environmental DNA signature distinguishes between tsunami and storm deposition in overwash sand. 
+
+
+This analysis is following D.Vaulot github tutorial: https://vaulot.github.io/tutorials/Phyloseq_tutorial.html#data
+
+
+
+# 2 Load all necessary libraries
+
+```{r, echo=FALSE}
+#install.packages("dplyr")     # To manipulate dataframes
+#install.packages("readxl")    # To read Excel files into R
+
+#install.packages("ggplot2")   # for high quality graphics
+#install.packages("tibble")    # to work with data frames
+#install.packages("tidyr")     # to work with data frames
+#install.packates("reshape2")  # to tidy dataframe
+
+#install.packages("stringr")   # to manipulate strings
+
+#install.packages("treemapify")
+#install.packages("viridis")
+#install.packages("ggpubr")   # to grid plot
+#install.packages("seriation") # to do seriation on heatmap
+
+#source("https://bioconductor.org/biocLite.R")
+#biocLite("phyloseq")          # metabarcode data analysis
+#biocLite("Biostrings")        # needed for fastq.geometry
+```
+
+for phyloseq installation, follow this link: https://bioconductor.org/packages/release/bioc/html/phyloseq.html
+
+```{r}
+library("phyloseq")
+library("ggplot2")      # graphics
+library("readxl")       # necessary to import the data from Excel file
+library("dplyr")        # filter and reformat data frames
+library("ggpubr")
+library("ggrepel")      # create text and label geom that don't overlap
+library("stringr")
+library("tibble")
+library("tidyr")
+library("stats")
+library("seriation")
+library("reshape2")
+library("vegan")
+library("treemapify")
+library("viridis")      # load viridis color map
+library("plotrix")
+library("forcats", lib.loc="/Library/Frameworks/R.framework/Versions/3.6/Resources/library")
+```
+
+# 3 Load colour palette
+inspired from wesanderson zissou colour palette
+
+```{r}
+
+qual_col <- c("#457291", "#CF6D2D", "#97B384", "#DEC447", "#8B4452", "#1E4650", "#F2A86A", "#7DB8DC", "#DDDDDD", "#96C5B1", "#D2C3EC")
+
+```
+
+
+# 4 Phyloseq analysis
+
+## 4.1 Create phyloseq files
+
+Filter the data to remove low bootsrtaps values (threshold:bootstrap >89% at the phylum level) and create a phyloseq file
+
+```{r}
+setwd("/Users/wenshu/Dropbox/India-DPM3a2/resequence/015")
+  
+  otu_table_final <- read_excel("phyloseq/_dada2.xlsx", sheet = "_dada2")
+  otu_table_ps <- otu_table_final %>% filter(Phylum_boot > 89)
+  
+  sample_table <- read_excel("phyloseq/sample_data_.xlsx", sheet = "sample_data_")
+  
+  otu_mat <- otu_table_ps %>% dplyr::select(-Genus, -Genus_boot)
+  tax_mat <- otu_table_ps %>% dplyr::select(otu = asv_code, Kingdom:Genus)
+  samples_df <- sample_table %>% dplyr::rename(sample = sample_names)
+
+  
+  #define the row name from the otu column
+  row.names(otu_mat) <- otu_mat$asv_code
+  #remove the column otu since it is now used as a row name
+  otu_mat <- otu_mat %>% select (-asv_code) 
+  
+  row.names(tax_mat) <- tax_mat$otu
+  tax_mat <- tax_mat %>% select(-otu)
+  row.names(samples_df) <- samples_df$sample
+  samples_df<- as.data.frame(samples_df)
+  samples_df1 <- samples_df %>% select(-sample)
+
+  #transform into matrix otu and tax table (sample table can be left as dataframe)
+  otu_mat <- as.matrix(otu_mat)
+  #otu_mat[,] <- as.numeric(otu_mat[,])
+  class(otu_mat) <- "numeric"
+  tax_mat <- as.matrix(tax_mat)
+  
+  #to count NA present in the data
+  #summary(otu_mat)
+  
+  #transform phyloseq objects
+  OTU = otu_table(otu_mat, taxa_are_rows = TRUE)
+  TAX = tax_table(tax_mat)
+  samples = sample_data(samples_df1)
+  
+  ps_all_raw <- phyloseq(OTU, TAX, samples)
+  ps_all_raw
+
+  
+```
+
+Filter dataset
+
+In this manuscript, we are only analyzing modern samples collected from Cuddalore and Phra Thong Island.
+
+```{r, echo=FALSE}
+  ps_all_raw <- subset_samples(ps_all_raw, !Venue =="Palu")
+  cat("\nPhyloseq All \n========== \n")
+  ps_all_raw
+  
+```
+
+Remove singletone
+```{r}
+## remove any OTUs that have only 10 count throughout the entire dataset
+  ps_all_raw_rm1 <- prune_taxa(taxa_sums(ps_all_raw) > 10, ps_all_raw) 
+  cat("\nPhyloseq All - remove reads below 10 \n========== \n")
+  ps_all_raw_rm1
+```
+
+Visualize data
+
+```{r}
+  sample_names(ps_all_raw_rm1)
+```
+
+
+```{r}
+  rank_names(ps_all_raw_rm1)
+```
+
+
+```{r}
+ sample_variables(ps_all_raw_rm1)
+```
+
+
+### 4.1.1 Filter the ASV table
+
+To remove Palaeo samples
+
+```{r}
+  ps_mod <- subset_samples(ps_all_raw_rm1, Palaeo =="No")
+  cat("\nPhyloseq All \n========== \n")
+  ps_mod
+```
+
+Check if there is any dataset that have samples with no reads
+```{r}
+  sample_sums(ps_mod) >0
+```
+
+In ps_mod, there is no samples that have no reads
+Next, remove taxa that are absent in all the samples
+
+
+```{r}
+  ps_mod <- prune_taxa(taxa_sums(ps_mod) > 0, ps_mod)
+  ps_mod
+```
+
+
+Remove water samples from the dataset
+```{r}
+  ps_mod2 <- subset_samples(ps_mod, !(SampleType %in% c("Ocean","Lagoon")))
+  cat("\nPhyloseq All \n========== \n")
+  ps_mod2
+```
+
+Remove taxa that are absent in all samples
+
+```{r}
+  ps_mod2 <-prune_taxa(taxa_sums(ps_mod2) > 0, ps_mod2)
+  ps_mod2
+```
+
+
+### 4.1.2 Break up into different kingdom
+For all samples
+```{r}
+  ps_bact <- subset_taxa(ps_mod, (Kingdom %in% c("Bacteria")))
+  cat("\nPhyloseq Bacteria \n========== \n")
+  ps_bact
+```
+
+
+```{r}
+  ps_arch <- subset_taxa(ps_mod, (Kingdom %in% c("Archaea")))
+  cat("\nPhyloseq Archaea \n========== \n")
+  ps_arch
+```
+
+
+```{r}
+  ps_euk <- subset_taxa(ps_mod, Kingdom %in% c("Eukaryota"))
+  cat("\nPhyloseq Eukaryotes \n========== \n")
+  ps_euk
+```
+
+
+For dataset excluding water samples and lagoon samples  
+```{r}
+  ps_bact2 <- subset_taxa(ps_mod2, (Kingdom %in% c("Bacteria")))
+  cat("\nPhyloseq Bacteria \n========== \n")
+  ps_bact2
+```
+
+
+```{r}
+  ps_arch2 <- subset_taxa(ps_mod2, (Kingdom %in% c("Archaea")))
+  cat("\nPhyloseq Archaea \n========== \n")
+  ps_arch2
+```
+
+
+```{r}
+  ps_euk2 <- subset_taxa(ps_mod2, Kingdom %in% c("Eukaryota"))
+  cat("\nPhyloseq Eukaryotes \n========== \n")
+  ps_euk2
+```
+
+
+### 4.1.3 Normalize number of reads in each samples using median sequencing depth.
+
+```{r}
+# First define a function to normalize
+
+ps_normalize_median <- function(ps, title) {
+    ps_median = median(sample_sums(ps))
+    cat(sprintf("\nThe median number of reads used for normalization of %s is  %.0f", 
+        title, ps_median))
+    normalize_median = function(x, t = ps_median) (if (sum(x) > 0) {
+        t * (x/sum(x))
+    } else {
+        x
+    })
+    ps = transform_sample_counts(ps, normalize_median)
+    cat(str_c("\nPhyloseq ", title, "\n========== \n"))
+    print(ps)
+}
+```
+
+
+```{r}
+# Apply to all the phyloseq files
+  ps_mod = ps_normalize_median(ps_mod, "all")
+```
+
+```{r}
+  ps_bact = ps_normalize_median(ps_bact, "bacteria")
+```
+
+```{r}
+  ps_arch = ps_normalize_median(ps_arch, "archaea")
+```
+
+```{r}
+  ps_euk = ps_normalize_median(ps_euk, "eukaryotes (auto+hetero)")
+```
+
+
+```{r}
+# Apply to all the phyloseq files
+  ps_mod2 = ps_normalize_median(ps_mod2, "exclude water and lagoon samples")
+```
+
+```{r}
+  ps_bact2 = ps_normalize_median(ps_bact2, "bacteria - exclude water and lagoon samples")
+```
+
+```{r}
+  ps_arch2 = ps_normalize_median(ps_arch2, "archaea - exclude water and lagoon samples")
+```
+
+```{r}
+  ps_euk2 = ps_normalize_median(ps_euk2, "eukaryotes (auto+hetero) - exclude water and lagoon samples")
+```
+
+
+### 4.1.4 Create a list for the phyloseq files
+
+```{r}
+  ps_list <- list(ps = c(ps_arch, ps_bact, ps_euk), 
+                title = c("Archaea - all OTUs", "Bacteria - all OTUs","Eukaryotes - all OTUs"))
+
+  ps_list2 <- list(ps = c(ps_arch2, ps_bact2, ps_euk2), 
+                title = c("Archaea - exclude water and lagoon samples", "Bacteria - exclude water and lagoon samples","Eukaryotes - exclude water and lagoon samples"))
+
+```
+
+
+### 4.1.5 Create tabular files for other plots
+
+```{r}
+ps_to_long <- function(ps) {
+    otu_df <- data.frame(otu_table(ps),stringsAsFactors =FALSE) %>% rownames_to_column(var = "asv_code")
+    taxo_df <- data.frame(tax_table(ps),stringsAsFactors =FALSE) %>% rownames_to_column(var = "asv_code")
+    otu_df <- left_join(taxo_df, otu_df)
+    otu_df <- gather(otu_df, "sample", "n_seq", contains("X")) #All samples contain X
+    metadata_df <- data.frame(sample_data(ps), stringsAsFactors =FALSE) %>% rownames_to_column(var = "sample")
+    otu_df <- left_join(otu_df, metadata_df)
+}
+
+long_all <- ps_to_long(ps_mod)
+saveRDS(long_all, file = "./phyloseq/fig_final/long_all.rds")
+
+long_all2 <- ps_to_long(ps_mod2)
+saveRDS(long_all, file = "./phyloseq/fig_final/long_all_nowtrnlgn.rds")
+
+long_euk <- ps_to_long(ps_euk)
+#saveRDS(long_euk, file = "./phyloseq/fig_final/long_euk.rds")
+
+long_bact <- ps_to_long(ps_bact)
+#saveRDS(long_bact, file = "./phyloseq/fig_final/long_bact.rds")
+
+long_arch <- ps_to_long(ps_arch)
+#saveRDS(long_arch, file = "./phyloseq/fig_final/long_arch.rds")
+
+long_euk2 <- ps_to_long(ps_euk2)
+#saveRDS(long_euk, file = "./phyloseq/fig_final/long_euk_nowtrnlgn.rds")
+
+long_bact2 <- ps_to_long(ps_bact2)
+#saveRDS(long_bact, file = "./phyloseq/fig_final/long_bact_nowtrnlgn.rds")
+
+long_arch2 <- ps_to_long(ps_arch2)
+#saveRDS(long_arch, file = "./phyloseq/fig_final/long_arch_nowtrnlgn.rds")
+
+```
+
+
+```{r, echo=FALSE}
+ saveRDS(ps_mod, file = "./phyloseq/fig_final/ps_mod.rds")
+ saveRDS(ps_mod2, file = "./phyloseq/fig_final/ps_mod2.rds")
+```
+
+
+## 4.2 Treemaps at division and class levels
+### 4.2.1 Define function to draw treemaps
+
+```{r}
+treemap_gg_dv <- function(df, group1, group2, title) {
+    group1 <- enquo(group1)
+    group2 <- enquo(group2)
+    df <- df %>% group_by(!!group1, !!group2) %>% summarise(n_seq = sum(n_seq))
+    g_treemap <- ggplot(df, aes(area = n_seq, fill = !!group2, label = !!group2, 
+        subgroup = !!group1)) + ggtitle(title) + treemapify::geom_treemap() + 
+        treemapify::geom_treemap_subgroup_border() + treemapify::geom_treemap_text(colour = "black", 
+        place = "topleft", reflow = T, padding.x = grid::unit(3, "mm"), padding.y = grid::unit(3, 
+            "mm")) + treemapify::geom_treemap_subgroup_text(place = "centre", 
+        grow = T, alpha = 0.5, colour = "white", fontface = "italic", min.size = 0) + 
+        scale_fill_viridis(discrete = TRUE) + theme(legend.position = "none", 
+        plot.title = element_text(size = 16, face = "bold"))
+    print(g_treemap)
+    return(g_treemap)
+}
+```
+
+### 4.2.2 Do individual treemaps
+
+```{r}
+array_treemap_all <- list()
+
+for (one_location in c("Cuddalore", "Phra Thong")) {
+    
+    label <- str_c(one_location, "-all")
+    
+    array_treemap_all[[label]] <- treemap_gg_dv(dplyr::filter(long_all, Venue == one_location), 
+        Kingdom, Phylum, str_c("", one_location))
+   
+}
+
+
+```
+
+```{r}
+ array_treemap_by_kingdom <- list()
+
+ for (one_location in c("Cuddalore", "Phra Thong")) {
+
+      label <- str_c(one_location, "-arch")
+     array_treemap_by_kingdom[[label]] <- treemap_gg_dv(dplyr::filter(long_all, Venue == one_location & Kingdom == "Archaea"), Class, Order, str_c("A - Archaea - ", one_location))
+
+     label <- str_c(one_location, "-bact")
+     array_treemap_by_kingdom[[label]] <- treemap_gg_dv(dplyr::filter(long_all, Venue == one_location & Kingdom == "Bacteria"), Class, Order, str_c("B - Bacteria - ", one_location))
+    
+    
+    label <- str_c(one_location, "-euks")
+    array_treemap_by_kingdom[[label]] <- treemap_gg_dv(dplyr::filter(long_all, Venue == one_location & Kingdom == "Eukaryota"), Class, Order, str_c("C - All Eukaryotes - ", one_location))
+    
+     }
+```
+
+
+#### 4.2.3 Arrange all the treemaps in a grid and save
+
+```{r}
+# Main Fig, all groups
+#fig_grid_treemap_all <- gridExtra::grid.arrange(grobs = array_treemap_all, ncol = 2, 
+#    nrow = 1, clip = FALSE, padding = unit(0, "line"), as.table = FALSE)
+
+#fig_grid_treemap_all
+
+#ggsave("./phyloseq/fig_final/fig_treemap_all.pdf", fig_grid_treemap_all, height = 5, width = 10, 
+#    dpi = 300)
+```
+
+
+```{r}
+# Supp Fig, by kingdom
+
+# fig_grid_treemap_by_kingdom <- gridExtra::grid.arrange(grobs = array_treemap_by_kingdom, 
+#     ncol = 2, nrow = 3, clip = FALSE, padding = unit(0, "line"), as.table = FALSE)
+
+# fig_grid_treemap_by_kingdom
+
+  #ggsave("./phyloseq/fig_final/fig_treemap_separate.pdf", fig_grid_treemap_by_kingdom, height = 15, 
+ #    width = 10, dpi = 300)
+```
+
+## 4.3. Microbial composition
+
+### 4.3.1 Bar plot for ASVs per sampling site
+
+```{r}
+array_abund_type_kingdom <- list()
+array_abund_type_phylum <- list()
+array_abund_type_class <- list()
+
+for (i in 1:length(ps_list$ps)) {
+  
+  ps_type <- ps_list$ps[[i]]
+  
+  array_abund_type_kingdom[[i]] <- plot_bar(ps_type, x = "Description", fill = "Kingdom") + 
+    geom_bar(aes(color = Kingdom, fill = Kingdom), stat = "identity", position = "stack") + 
+    ggtitle(str_c("Kingdom level - ", ps_list$title[[i]])) + 
+    coord_flip() + 
+    facet_wrap(Venue~SamplingSite, scales= "free") +
+    scale_fill_viridis(discrete = TRUE) + 
+    scale_color_viridis(discrete = TRUE) +
+    theme(axis.text.y = element_text(size = 10)) + 
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5)) + 
+    #theme(legend.position = "none", legend.box = "vertical") +
+    theme(legend.box = "horizontal") +
+    theme(legend.text = element_text(size=5))
+    guides(fill = guide_legend(title.position = "top", ncol = 5, nrow = 8, byrow = FALSE))
+    
+    
+  array_abund_type_phylum[[i]] <- plot_bar(ps_type, x = "Description", fill = "Phylum") + 
+    geom_bar(aes(color = Phylum, fill = Phylum), stat = "identity", position = "stack") + 
+    ggtitle(str_c("Phylum level - ", ps_list$title[[i]])) + 
+    coord_flip() + 
+    facet_wrap(Venue~SamplingSite, scales= "free") +
+    scale_fill_viridis(discrete = TRUE) + 
+    scale_color_viridis(discrete = TRUE) +
+    theme(axis.text.y = element_text(size = 10)) + 
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5)) + 
+    #theme(legend.position = "none", legend.box = "vertical") +
+    theme(legend.box = "horizontal") +
+    theme(legend.text = element_text(size=5))
+    guides(fill = guide_legend(title.position = "top", ncol = 5, nrow = 8, byrow = FALSE))
+
+    
+  print(array_abund_type_kingdom[[i]])
+  print(array_abund_type_phylum[[i]])
+
+}
+
+```
+
+### 4.3.2 Save plots as grid
+```{r}
+#grid_fig_description_abund_kingdom <-  cowplot::plot_grid(array_abund_type_kingdom[[1]],
+#                                            array_abund_type_kingdom[[2]],
+#                                            array_abund_type_kingdom[[3]],
+#                                            align="hv",
+#                                           # labels=c("A","B", "C", "D"),
+#                                           ncol=1, nrow=3, label_size = 12)
+
+
+#ggsave("./phyloseq/fig_final/fig_asv_description_abund_kingdom.png", grid_fig_description_abund_kingdom, 
+#       height = 20, width = 20, dpi = 300)
+```
+
+
+
+```{r}
+#grid_fig_description_abund_phylum <-  cowplot::plot_grid(array_abund_type_phylum[[1]],
+#                                            array_abund_type_phylum[[2]],
+#                                            array_abund_type_phylum[[3]],
+#                                            align="hv",
+#                                           # labels=c("A","B", "C", "D"),
+#                                           ncol=1, nrow=3, label_size = 12)
+
+
+#ggsave("./phyloseq/fig_final/fig_asv_description_abund_phylum.png", grid_fig_description_abund_phylum, 
+#       height = 20, width = 20, dpi = 300)
+```
+
+
+
+## 4.4 Alpha diversity
+
+### 4.4.1 Boxplot with error bar
+```{r}
+ps_richness_all <- ps_mod
+        
+        
+        #rarefy the samples to simulate even number of reads per samples
+        ps_rarefy_all <- rarefy_even_depth(ps_richness_all, rngseed = 1, sample.size = 0.9*min(sample_sums(ps_richness_all)), replace = TRUE)
+        
+        #rearrange the order of the factors
+         desired_order_all<- list("Tsunami deposit","Storm deposit","Soil and terrestrial samples", "Lagoon", "Beach", "Intertidal", "Marine sediment", "Ocean")
+         ps_rarefy_all@sam_data$SampleType<- factor(ps_rarefy_all@sam_data$SampleType, levels=desired_order_all)
+        
+         order_description<- list("2004IOT", "Cyclone Thane", "Topsoil", "Aeolian sed.", "Intertidal sed.", "2007 Storm", "Post2004IOT", "Pre2004IOT", "Post2007Storm", "Pre2007Storm", "Lagoon", "Beach", "Intertidal Sand","Marine sediment", "Ocean")
+         ps_rarefy_all@sam_data$Description3<- factor(ps_rarefy_all@sam_data$Description3, levels=order_description)
+        
+        #calculate rarefaction
+       r_all<- plot_richness(ps_rarefy_all, x="Description3", color="SampleType", measures=c("Shannon","Simpson"), title = "Diversity for all samples")
+      
+        
+       r_all<- r_all + geom_boxplot(alpha = 0.3, fill = "gray")+
+         geom_point(size = 3, position = position_jitter(w=0.2, h=0)) +
+         stat_boxplot (geom = "errorbar", width = 0.2) + # this will create the whiskers
+         facet_grid(r_all$data$variable~Venue, scales = "free")+
+         ylab("") +
+         scale_color_manual(values=c("Tsunami deposit"="#DEC447", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#457291", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+         scale_fill_manual(values=c("Tsunami deposit"="#DEC447", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#457291", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+         theme_bw() + 
+         theme(axis.text.x = element_text(size = 10, angle = 90, hjust = 1, vjust = 0)) + 
+         theme(axis.text.y = element_text(size = 10, angle = 0, hjust = 0, vjust = 0)) +
+         theme(strip.text.x = element_text(size = 10)) +
+         theme(strip.text.y = element_text(size = 10, angle = 90)) +
+         theme(plot.title = element_text(size = 12, hjust = 0.5),
+               axis.text=element_text(size=10),
+               legend.title = element_blank(), 
+               legend.text = element_text(size = 10),
+               legend.position = "top", legend.box = "vertical") + 
+         guides(fill = guide_legend(title.position = "top", 
+         ncol = 3, nrow = 1, byrow = FALSE))
+       
+r_all
+```
+
+```{r}
+# ggsave("./phyloseq/fig_final/fig_richness_all.pdf", r_all, 
+#           height = 20, width = 20, dpi = 300)
+```
+
+
+### 4.4.2 Define function to draw richness boxplot
+```{r}
+
+ ps_do_richness <- function(ps_list) {
+    
+     plot_array <- list()
+    
+     for (i in 1:2) {
+        
+         ps_richness <- ps_list$ps[[i]]
+        
+        #Remove environmental samples, marine samples and ocean samples
+         ps_richness <- subset_samples(ps_richness, !(str_detect(SampleType, "Beach|Intertidal|Ocean|Lagoon")))
+
+        #rarefy the samples to simulate even number of reads per samples
+        ps_rarefy <- rarefy_even_depth(ps_richness, rngseed = 1, sample.size = 0.9*min(sample_sums(ps_richness)), replace = TRUE)
+        
+        #rearrange the order of the factors
+         desired_order<- list("Tsunami deposit","Storm deposit","Soil and terrestrial samples","Marine sediment")
+         ps_rarefy@sam_data$SampleType<- factor(ps_rarefy@sam_data$SampleType, levels=desired_order)
+        
+         order_description<- list("2004IOT", "Cyclone Thane", "Topsoil", "Aeolian sed.", "Intertidal sed.", "2007 Storm", "Post2004IOT", "Pre2004IOT", "Post2007Storm", "Pre2007Storm", "Marine sediment")
+         ps_rarefy@sam_data$Description3<- factor(ps_rarefy@sam_data$Description3, levels=order_description)
+        
+        
+        #calculate rarefaction
+       r<- plot_richness(ps_rarefy, x="Description3", color="SampleType", measures=c("Shannon","Simpson"), title = ps_list$title[[i]])
+      
+       r<- r + geom_boxplot(alpha = 0.3, fill="gray")+
+         geom_point(size = 3, position = position_jitter(w=0.1)) +
+         stat_boxplot (geom = "errorbar", width = 0.2) + # this will create the whiskers
+         facet_grid(r$data$variable~Venue, scales = "free")+
+         ylab("") +
+         scale_color_manual(values=c("Tsunami deposit"="#DEC447", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#457291", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+         scale_fill_manual(values=c("Tsunami deposit"="#DEC447", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#457291", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+         theme_bw() + 
+         theme_bw() + 
+         theme(axis.text.x = element_text(size = 16, angle = 90, hjust = 1, vjust = 0)) + 
+         theme(axis.text.y = element_text(size = 10, angle = 0, hjust = 0, vjust = 0)) +
+         theme(strip.text.x = element_text(size = 10)) +
+         theme(strip.text.y = element_text(size = 10, angle = 90)) +
+         theme(plot.title = element_text(size = 12, hjust = 0.5),
+               axis.text=element_text(size=10),
+               legend.title = element_blank(), 
+               legend.text = element_text(size = 10),
+               legend.position = "top", legend.box = "vertical") + 
+         guides(fill = guide_legend(title.position = "top", 
+         ncol = 3, nrow = 1, byrow = FALSE))
+
+
+        # summary(lm(Shannon ~ SampleType, data = ps_richness))
+        #if necessary, can use estimate_richness() to export the estimated number of standard alpha diversity
+
+         plot_array[[i]] <- r
+        
+         print(r)
+     }
+     return(plot_array)
+ }
+```
+
+```{r}
+  plot_array_richness<- ps_do_richness(ps_list)
+```
+
+sample_sums(ps_euk) shows that there is zero euk for certain samples eg 52cmS1, 52cmS2, 73cmS2, 71cmS1, 77cmS2. I override the function and min(sample_sums(ps_euk)) to 202
+```{r}
+ ps_richness_euk <- ps_euk
+        
+        #Remove samples with zero euk
+         ps_richness_euk <- subset_samples(ps_richness_euk, !(str_detect(SampleType, "Beach|Intertidal|Ocean|Lagoon")))
+
+        #rarefy the samples to simulate even number of reads per samples
+        ps_rarefy_euk <- rarefy_even_depth(ps_richness_euk, rngseed = 1, sample.size = (0.9*202), replace = TRUE)
+        
+        #rearrange the order of the factors
+         desired_order_euk<- list("Tsunami deposit","Storm deposit","Soil and terrestrial samples","Marine sediment")
+         ps_rarefy_euk@sam_data$SampleType<- factor(ps_rarefy_euk@sam_data$SampleType, levels=desired_order_euk)
+        
+         order_description<- list("2004IOT", "Cyclone Thane", "Topsoil", "Aeolian sed.", "Intertidal sed.", "2007 Storm", "Post2004IOT", "Pre2004IOT", "Post2007Storm", "Pre2007Storm", "Marine sediment")
+         ps_rarefy_euk@sam_data$Description3<- factor(ps_rarefy_euk@sam_data$Description3, levels=order_description)
+        
+        #calculate rarefaction
+       r_euk<- plot_richness(ps_rarefy_euk, x="Description3", color="SampleType", measures=c("Shannon","Simpson"), title = ps_list$title[[3]])
+      
+       r_euk<- r_euk + geom_boxplot(alpha = 0.3, fill = "gray")+
+         geom_point(size = 3, position = position_jitter(w=0.1)) +
+         facet_grid(r_euk$data$variable~Venue, scales = "free")+
+         ylab("") +
+         scale_color_manual(values=c("Tsunami deposit"="#DEC447", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#457291", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+         scale_fill_manual(values=c("Tsunami deposit"="#DEC447", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#457291", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+         theme_bw() + 
+         theme(axis.text.x = element_text(size = 10, angle = 90, hjust = 1, vjust = 0)) + 
+         theme(axis.text.y = element_text(size = 10, angle = 0, hjust = 0, vjust = 0)) +
+         theme(strip.text.x = element_text(size = 10)) +
+         theme(strip.text.y = element_text(size = 10, angle = 90)) +
+         theme(plot.title = element_text(size = 10, hjust = 0.5),
+               axis.text=element_text(size=10),
+               legend.title = element_blank(), 
+               legend.text = element_text(size = 10),
+               legend.position = "top", legend.box = "vertical") + 
+         guides(fill = guide_legend(title.position = "top", 
+         ncol = 3, nrow = 1, byrow = FALSE))
+       
+r_euk
+```
+
+```{r}
+
+#create common legend for the combined ggplots
+
+# grid_fig_rich <-  ggarrange(plot_array_richness[[1]],
+#                             plot_array_richness[[2]], 
+                             #plot_array_richness[[3]],
+#                             r_euk,
+#                                     align="hv",
+#                                     ncol=3, nrow=1, #
+#                                     common.legend = #TRUE, legend = "top",
+#                                     font.label = #list(size=20))
+
+#  grid_fig_rich
+   #ggsave("./phyloseq/fig_final/fig_richness_shanon.pdf", grid_fig_rich, 
+  #         height = 20, width = 20, dpi = 300)
+   
+```
+
+
+
+## 4.5 Ordination analysis
+### 4.5.1 Create phyloseq file for each location
+reload the phyloseq file when necessary
+```{r}
+# ps_mod<- readRDS(file = "./phyloseq/fig_final/ps_mod.rds")
+# ps_mod2<- readRDS(file = "./phyloseq/fig_final/ps_mod2.rds")
+```
+
+Cuddalore
+```{r}
+  ps_mod_india <- subset_samples(ps_mod2, Venue =="Cuddalore")
+  cat("\nPhyloseq Cuddalore \n========== \n")
+  ps_mod_india
+```
+
+```{r}
+  #remove any OTUs that have only 1 count throughout the entire dataset
+  ps_mod_india <- prune_taxa(taxa_sums(ps_mod_india) > 0, ps_mod_india) 
+  cat("\nPhyloseq Cuddalore \n========== \n")
+  ps_mod_india
+```
+
+Cuddalore: storm, tsunami and soil
+```{r}
+  ps_mod_india_ovw_soil <- subset_samples(ps_mod_india, (SampleType %in% c("Soil and terrestrial samples","Storm deposit", "Tsunami deposit")))
+  cat("\nPhyloseq Cuddalore: storm, tsunami, soil \n========== \n")
+  ps_mod_india_ovw_soil
+```
+
+```{r}
+  #remove any OTUs that have only 1 count throughout the entire dataset
+  ps_mod_india_ovw_soil <- prune_taxa(taxa_sums(ps_mod_india_ovw_soil) > 0, ps_mod_india_ovw_soil) 
+  cat("\nPhyloseq Cuddalore: storm, tsunami, soil \n========== \n")
+  ps_mod_india_ovw_soil
+```
+
+Phra Thong Island 
+```{r}
+  ps_mod_pt <- subset_samples(ps_mod2, Venue == "Phra Thong")
+  cat("\nPhyloseq Phra Thong \n========== \n")
+  ps_mod_pt
+```
+
+
+```{r}
+  #remove any OTUs that have only 1 count throughout the entire dataset
+  ps_mod_pt <- prune_taxa(taxa_sums(ps_mod_pt) > 0, ps_mod_pt) 
+  cat("\nPhyloseq Phra Thong \n========== \n")
+  ps_mod_pt
+```
+
+Phra Thong Island: storm, tsunami, soil
+```{r}
+  ps_mod_pt_ovw_soil <- subset_samples(ps_mod_pt, (SampleType %in% c("Soil and terrestrial samples","Storm deposit", "Tsunami deposit")))
+  cat("\nPhyloseq Phra Thong: storm, tsunami, soil \n========== \n")
+  ps_mod_pt_ovw_soil
+```
+
+```{r}
+  #remove any OTUs that have only 1 count throughout the entire dataset
+  ps_mod_pt_ovw_soil <- prune_taxa(taxa_sums(ps_mod_pt_ovw_soil) > 0, ps_mod_pt_ovw_soil) 
+  cat("\nPhyloseq Phra Thong: storm, tsunami, soil \n========== \n")
+  ps_mod_pt_ovw_soil
+```
+
+Create a list for each location
+```{r}
+  ps_loc_list <- list(ps = c(ps_mod_india, ps_mod_pt, ps_mod_india_ovw_soil, ps_mod_pt_ovw_soil), 
+                title = c("Cuddalore - exclude water samples and lagoon sediments", "Phra Thong - exclude water samples and lagoon sediments", "Cuddalore - tsunami, storm and soil samples", "Phra Thong - tsunami, storm, soil samples"))
+```
+
+Create a phyloseq list for ps_mod and ps_mod2
+```{r}
+  ps_mod_ord<- list(ps=c(ps_mod, ps_mod2),
+                  title = c("All samples", "Exclude water and lagoon samples"))
+```
+
+
+### 4.5.2 Define function to transform data
+normalized with median sequences length and transform with squareroot 
+
+```{r}
+ps_transform <- function(ps, title) {
+    ps_median = median(sample_sums(ps))
+    cat(sprintf("\nThe median number of reads used for normalization of %s is  %.0f", 
+        title, ps_median))
+    normalize_median = function(x, t = ps_median) (if (sum(x) > 0) {
+        t * (x/sum(x))
+    } else {
+        x
+    })
+    ps = transform_sample_counts(ps, normalize_median)
+    
+    ps_sqrt = transform_sample_counts(ps, sqrt)
+    cat(str_c("\nPhyloseq ", title, "\n========== \n"))
+    print(ps)
+}
+
+```
+
+Transform phyloseq files in ps_mod_ord list
+
+```{r}
+  ps_mod_ord_all_trans = ps_transform(ps_mod_ord$ps[[1]], ps_mod_ord$title[[1]])
+```
+
+```{r}
+  ps_mod_ord_trans = ps_transform(ps_mod_ord$ps[[2]], ps_mod_ord$title[[2]])
+```
+
+
+Apply to phyloseq files in ps_loc_list
+
+```{r}
+  ps_cudd_Xwtrlgn = ps_transform(ps_loc_list$ps[[1]], ps_loc_list$title[[1]])
+```
+
+```{r}
+  ps_pt_Xwtrlgn<- ps_transform(ps_loc_list$ps[[2]], ps_loc_list$title[[2]])
+```
+
+```{r}
+  ps_cudd_overwsh_soil<- ps_transform(ps_loc_list$ps[[3]], ps_loc_list$title[[3]])
+```
+
+```{r}
+  ps_pt_overwsh_soil<- ps_transform(ps_loc_list$ps[[4]], ps_loc_list$title[[4]])
+```
+
+
+### 4.5.3 Create lists for normalized and transformed phyloseq files
+```{r}
+  ord_list<- list(ps = c(ps_cudd_Xwtrlgn, ps_pt_Xwtrlgn), 
+                title = c("Cuddalore - exclude water samples and lagoon sediments", "Phra Thong - exclude water samples and lagoon sediments"))
+
+  ord_list2<- list(ps = c(ps_cudd_Xwtrlgn, ps_pt_Xwtrlgn, ps_cudd_overwsh_soil, ps_pt_overwsh_soil), 
+                title = c("Cuddalore - exclude water samples and lagoon sediments", "Phra Thong - exclude water samples and lagoon sediments", "Cuddalore - tsunami, storm and soil samples", "Phra Thong - tsunami, storm, soil samples"))
+
+  ps_mod_ord_list<- list(ps=c(ps_mod_ord_all_trans, ps_mod_ord_trans),
+                         title = c("All samples", "Exclude water and lagoon samples"))
+```
+
+
+### 4.5.4 PCoA plot
+For all samples
+```{r}
+
+plot_pcoa1 <- list()
+
+for (i in 1:length(ps_mod_ord_list$ps)) {
+  ps_pcoa1 <- ps_mod_ord_list$ps[[i]]
+  
+  pcoa.ord <- ordinate(ps_pcoa1, "PCoA", "bray")
+  
+  # Fit environmental parameters
+  env_var <- sample_variables(ps_pcoa1)
+  env_matrix <- get_variable(ps_pcoa1, c("C","N","d13C","S"))
+  env_fit <- vegan::envfit(pcoa.ord$vectors, 
+                            env = env_matrix, 
+                            perm = 999, na.rm = TRUE)
+  env_arrows <- data.frame(env_fit$vectors$arrows * sqrt(env_fit$vectors$r)) %>% 
+    rownames_to_column(var = "parameter")
+  
+  
+  # Factor to move the labels
+  #factor <- 1.5
+  # I didn't do Axis.1*factor when plotting      
+  
+  plot_pcoa1[[i]] <- plot_ordination(physeq = ps_pcoa1,
+                                      pcoa.ord, 
+                                      #label="Description", 
+                                      color = "Venue") + 
+      geom_point(aes(shape = SampleType)) +
+      geom_point(aes(size = Year)) +
+      geom_text_repel (label = ps_pcoa1@sam_data$Description3, size = 5, box.padding = unit(0.4, "lines"), point.padding = unit(0.2, "lines"))+
+    scale_color_manual(values=c(qual_col)) +  
+    scale_shape_manual(values=c("Tsunami deposit"=24, "Soil and terrestrial samples"=16, "Storm deposit"=25, "Marine sediment"=15, "Beach"=18, "Intertidal"=5, "Lagoon"=1, "Ocean"=0)) +
+      scale_size_continuous(breaks = c(2014,2015,2017)) +
+      coord_equal() +
+      theme_bw() +
+    theme(plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+               axis.text=element_text(size=10),
+               legend.title = element_blank(), 
+               legend.text = element_text(size = 10),
+               legend.position = "top", legend.box = "vertical",
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank()) +
+      labs(title = str_c("PCoA - Bray", ps_mod_ord_list$title[[i]])) +
+    stat_ellipse (aes(x=Axis.1, y=Axis.2, color=Venue), level=0.95, linetype=2, inherit.aes = FALSE) +
+    geom_segment(data = env_arrows, 
+                         aes(x = 0, xend = Axis.1, 
+                             y = 0, yend = Axis.2), 
+                 inherit.aes = FALSE, arrow = arrow(length = unit(0.5, "cm")), colour = "black") + 
+    geom_text(data = env_arrows, 
+                      aes(x = Axis.1, y = Axis.2, 
+                          label = parameter), 
+              inherit.aes = FALSE, hjust = -0.2, vjust = -0.2, size = 3)
+  
+    print(plot_pcoa1[[i]])
+  
+
+}
+ 
+
+```
+
+save plot as grid
+```{r}
+#grid_fig_pcoa<- ggarrange(plot_pcoa1[[1]],plot_pcoa1[[2]],
+#                          labels = c("A","B"),
+#                          align = "hv", 
+#                          ncol = 2, nrow =1,
+#                          #common.legend = TRUE,
+#                          legend = "top",
+#                          font.label = list(size=20))
+
+#    grid_fig_pcoa
+  #ggsave("./phyloseq/fig_final/fig_pcoa_combined.pdf", grid_fig_pcoa, 
+  #        height = 15, width = 30, dpi = 300)
+```
+
+
+For separated location, excluding water samples and lagoon samples
+```{r}
+
+plot_pcoa <- list()
+
+for (i in 1:length(ord_list$ps)) {
+  ps_pcoa <- ord_list$ps[[i]]
+  
+  pcoa.ord <- ordinate(ps_pcoa, "PCoA", "bray")
+  
+  # Fit environmental parameters
+  env_var <- sample_variables(ps_pcoa)
+  env_matrix <- get_variable(ps_pcoa, c("C","N","d13C","S"))
+  env_fit <- vegan::envfit(pcoa.ord$vectors, 
+                            env = env_matrix, 
+                            perm = 999, na.rm = TRUE)
+  env_arrows <- data.frame(env_fit$vectors$arrows * sqrt(env_fit$vectors$r)) %>% 
+    rownames_to_column(var = "parameter")
+  
+  
+  # Factor to move the labels
+  #factor <- 1.5
+  # I didn't do Axis.1*factor when plotting      
+  
+  plot_pcoa[[i]] <- plot_ordination(physeq = ps_pcoa,
+                                      pcoa.ord, 
+                                      label="Description", 
+                                      color = "SampleType") + 
+      geom_point(aes(color = SampleType), size = 6) + 
+      geom_point(aes(size=Year))+
+      geom_text_repel (label = ps_pcoa@sam_data$Description3, size = 5, box.padding = unit(0.8, "lines"), point.padding = unit(0.5, "lines"))+
+      scale_color_manual(values=c("Tsunami deposit"="#DEC447", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#457291", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+      scale_size_continuous(breaks = c(2014,2015,2017)) +
+      coord_equal() +
+      theme_bw() +
+    theme(plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+               axis.text=element_text(size=10),
+               legend.title = element_blank(), 
+               legend.text = element_text(size = 10),
+               legend.position = "top", legend.box = "vertical",
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank()) +
+      labs(title = str_c("PCoA - Bray",ord_list$title[[i]])) +
+    geom_segment(data = env_arrows, 
+                         aes(x = 0, xend = Axis.1, 
+                             y = 0, yend = Axis.2), 
+                 inherit.aes = FALSE, arrow = arrow(length = unit(0.5, "cm")), colour = "black") + 
+    geom_text(data = env_arrows, 
+                      aes(x = Axis.1, y = Axis.2, 
+                          label = parameter), 
+              inherit.aes = FALSE, hjust = -0.2, vjust = -0.2, size = 3)
+  
+    print(plot_pcoa[[i]])
+  
+
+}
+ 
+
+```
+
+save plot as grid
+```{r}
+#grid_fig_pcoa_loc<- ggarrange(plot_pcoa[[1]],plot_pcoa[[2]],
+#                          labels = c("A","B"),
+#                          align = "hv", 
+#                          ncol = 2, nrow =1,
+#                          #common.legend = TRUE,
+#                          legend = "top",
+#                          font.label = list(size=20))
+
+#    grid_fig_pcoa_loc
+  #ggsave("./phyloseq/fig_final/fig_pcoa_loc_combined.pdf", grid_fig_pcoa_loc, 
+  #        height = 15, width = 30, dpi = 300)
+```
+
+### 4.5.5 Fit environmental parameteres
+```{r}
+# Fit environmental parameters
+df_envfit <- list()
+
+for (i in 1:length(ps_mod_ord_list$ps)) {
+  ps_pcoa1 <- ps_mod_ord_list$ps[[i]]
+  
+  pcoa.ord <- ordinate(ps_pcoa1, "PCoA", "bray")
+  
+  # Fit environmental parameters
+  env_var <- sample_variables(ps_pcoa1)
+  env_matrix <- get_variable(ps_pcoa1, c("C","N","S"))
+  env_fit <- vegan::envfit(pcoa.ord$vectors, 
+                            env = env_matrix, 
+                            perm = 999, na.rm = TRUE)
+  env_arrows <- data.frame(env_fit$vectors$arrows * sqrt(env_fit$vectors$r)) %>% 
+    rownames_to_column(var = "parameter")
+
+  print(env_fit)
+        
+  df_envfit[[i]]<- data.frame((env_fit$vectors)$arrows, (env_fit$vectors)$r, (env_fit$vectors)$pvals)
+        
+        print(df_envfit[[i]])
+   }
+
+```
+
+
+### 4.5.6 Plot dbRDA
+```{r}
+array_dbrda_loc <- list()
+env_fit_loc <- list()
+df_envfit <- list()
+
+#use length(ord_list2$ps) to know what is the length of this list
+
+for (i in 1:length(ord_list2$ps)) {
+
+  ps_dbrda_loc <- ord_list2$ps[[i]]
+  
+  # Remove samples with no reads
+  ps_dbrda_loc <- prune_samples(sample_sums(ps_dbrda_loc) > 0, ps_dbrda_loc)
+  
+  # Calculate ordination with bray-curtis matrix
+  bray_cap_loc<- ordinate(ps_dbrda_loc, "CAP", "bray", ~SampleType)
+  
+  # load envfit result
+  env_var <- phyloseq::sample_variables(ps_dbrda_loc)
+  env_matrix <- phyloseq::get_variable(ps_dbrda_loc, c("mean_phi","sorting"))
+  env_fit_loc[[i]] <- vegan::envfit(bray_cap_loc, 
+                            env = env_matrix, 
+                            perm = 999, na.rm = TRUE)
+  env_arrows <- data.frame(env_fit_loc[[i]]$vectors$arrows * sqrt(env_fit_loc[[i]]$vectors$r)) %>% 
+    rownames_to_column(var = "parameter")
+  
+  
+  # Plot ordination
+  array_dbrda_loc[[i]]<- plot_ordination(ps_dbrda_loc, bray_cap_loc, type="samples", color = "SampleType", title = "dbRDA - bray - all ASVs") +
+  geom_point(aes(color = SampleType), size = 6) + 
+  geom_text_repel (label = ps_dbrda_loc@sam_data$Description3, size = 5,
+                     box.padding = unit(0.8, "lines"),
+                     point.padding = unit(0.5, "lines")) +
+  scale_color_manual(values=c("Tsunami deposit"="#DEC447", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#457291", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+  stat_ellipse (aes(x=CAP1, y=CAP2, color=SampleType), level=0.80, linetype=2, inherit.aes = FALSE) +
+    geom_segment(data = env_arrows, 
+                         aes(x = 0, xend = CAP1, 
+                             y = 0, yend = CAP2), 
+                 inherit.aes = FALSE, arrow = arrow(length = unit(0.5, "cm")), colour = "black") + 
+    geom_text(data = env_arrows, 
+                      aes(x = CAP1, y = CAP2, 
+                          label = parameter), 
+              inherit.aes = FALSE, hjust = -0.2, vjust = -0.2, size = 3) +
+  theme_bw() +
+    theme(plot.title = element_text(size = 22, hjust = 0.5, face = 'bold'),
+               axis.text=element_text(size=16),
+               legend.title = element_blank(), 
+               legend.text = element_text(size = 22),
+               legend.position = "top", 
+          legend.box = "vertical",
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank()) +
+    labs(title = str_c(ord_list2$title[[i]], "- dbRDA - bray_curtis"))
+
+  array_dbrda_loc[[i]]
+  print(array_dbrda_loc[[i]])
+  
+  cat(str_c("\nPhyloseq ", ord_list2$title[[i]], "\n========== \n"))
+  print(env_fit_loc[[i]])
+  
+  
+}
+```
+
+save plots as grid
+```{r}
+#grid_fig_dbrda_loc<- ggarrange(array_dbrda_loc[[2]],array_dbrda_loc[[1]],
+#                                array_dbrda_loc[[4]],array_dbrda_loc[[3]],
+#                          labels = c("A","B", "C","D"),
+#                          align = "hv", 
+#                          ncol = 2, nrow =2,
+#                          #common.legend = TRUE,
+#                          legend = "top",
+#                          font.label = list(size=20))
+
+#    grid_fig_dbrda_loc
+#  ggsave("./phyloseq/fig_final/fig_dbrda_loc_combined_80_grain_size.pdf", grid_fig_dbrda_loc, 
+#          height = 20, width = 20, dpi = 300)
+```
+
+Statistical test for dbRDA
+```{r}
+bray_cap_loc <-list()
+
+for (i in 1:(length(ord_list2$ps))) {
+  
+  ps_dbrda_loc <- ord_list2$ps[[i]]
+  
+  bray_cap_loc[[i]]<- ordinate(ps_dbrda_loc, "CAP", "bray", ~SampleType)
+  bray_cap_loc[[i]]
+  
+  cap_anova<- anova(bray_cap_loc[[i]]) ## overall test of the significance of the analysis
+  
+  cap_axis_anova<- anova(bray_cap_loc[[i]], by="axis", perm.max=500) #test the significance of each axis
+
+#  write.table(cap_anova, file=str_c("./phyloseq/fig_final/cap_anova_braycurtis_",ord_list2$title[[i]],".txt"), sep=",", quote=FALSE, row.names = F)
+  
+#  write.table(cap_axis_anova, file=str_c("./phyloseq/fig_final/cap_axis_anova_braycurtis_",ord_list2$title[[i]],".txt"), sep=",", quote=FALSE, row.names = F)
+
+  print(bray_cap_loc[[i]])
+  
+  
+  }
+
+```
+
+### 4.5.7 Fit environmental parameter for dbRDA
+```{r}
+# Fit environmental parameters
+df_envfit <- list()
+
+for (i in 1:length(ord_list2$ps)) {
+  ps_dbrda1 <- ord_list2$ps[[i]]
+  
+  dbrda1.ord <- ordinate(ps_dbrda1, "CAP", "bray", ~SampleType)
+  
+  # Fit environmental parameters
+  env_var <- phyloseq::sample_variables(ps_dbrda1)
+  env_matrix <- phyloseq::get_variable(ps_dbrda1, c("mean_phi","sorting","C","N","S"))
+  env_fit_loc <- vegan::envfit(dbrda1.ord, 
+                            env = env_matrix, 
+                            perm = 999, na.rm = TRUE)
+  
+  df_envfit[[i]]<- data.frame((env_fit_loc$vectors)$arrows, (env_fit_loc$vectors)$r, (env_fit_loc$vectors)$pvals)
+  
+  cat("\nenvfit ord_list2$title[[i]] \n========== \n")
+  print(env_fit_loc)
+        
+#  write.table(df_envfit[[i]], file=str_c("./phyloseq/fig_final/envfit_dbrda_braycurtis_",ord_list2$title[[i]],".txt"), sep=",", quote=FALSE, row.names = F)
+  
+  }
+
+```
+
+Save envfit output
+```{r}
+#write.table(df_envfit[[i]] file=str_c("./phyloseq/fig_final/envfit_dbrda_braycurtis_",ord_list2$title[[i]],".txt"), sep=",", quote=FALSE, row.names = F)
+  
+
+```
+
+## 4.6 Statistical test
+### 4.6.1 PERMANOVA
+```{r}
+permanova_glb <- list()
+  
+     for (i in 1:length(ord_list2$ps)) {
+        
+        stat_permanova <- ord_list2$ps[[i]]
+        
+        # Remove samples with no reads
+        stat_permanova <- prune_samples(sample_sums(stat_permanova) > 0, stat_permanova)
+        
+        bray_glb<- phyloseq::distance(stat_permanova, method="bray")
+        permanova_glb[[i]]<- adonis(bray_glb ~ stat_permanova@sam_data$SampleType, permutation=9999)
+  
+     print(permanova_glb[[i]])
+    }
+    
+```
+
+
+## 4.7 Differential expression (DESeq2)
+
+Love, M.I., Huber, W. & Anders, S. 2014. Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2. Genome Biol. 15:550.
+
+Follow:
+https://joey711.github.io/phyloseq-extensions/DESeq2.html
+https://bioconductor.org/packages/devel/bioc/vignettes/phyloseq/inst/doc/phyloseq-mixture-models.html
+Start from raw counts (not normalized) : ps_all_raw
+
+```{r}
+  library("DESeq2")
+  packageVersion("DESeq2")
+```
+
+Block 1 is need to avoid the following error > Error in estimateSizeFactorsForMatrix(counts(object), locfunc = locfunc, : every gene contains at least one zero, cannot compute log geometric means
+
+See: https://github.com/joey711/phyloseq/issues/387
+
+
+### 4.7.1 Run the following for the theme to plot DESeq2
+```{r}
+#' @title theme_dviz_grid()
+#'
+#' @description  grid lines along major axis ticks, no axes - ggplot theme taken from https://github.com/clauswilke/dataviz/blob/master/R/themes.R
+#' @export
+# grid lines along major axis ticks, no axes
+theme_dviz_grid <- function(font_size = 14, font_family = "") {
+  color = "grey60"
+  line_size = 0.5
+
+  # Starts with theme_cowplot and then modify some parts
+  cowplot::theme_cowplot(font_size = font_size, font_family = font_family) %+replace%
+    theme(
+      # make horizontal grid lines
+      panel.grid.major   = element_line(color = color,
+                                        size = line_size),
+      panel.grid.minor   = element_line(color = color,
+                                        size = line_size),
+
+      # adjust axis tickmarks
+      axis.ticks        = element_line(colour = color, size = line_size),
+
+      # no x or y axis lines
+      axis.line.x       = element_blank(),
+      axis.line.y       = element_blank()
+    )
+}
+```
+
+
+### 4.7.2 Create phyloseq files for just 2004IOT deposits and storm deposits
+```{r}
+  ps <- ps_mod2
+
+  deseq_india<- phyloseq::subset_samples(ps, Description %in% 
+                                           c("2004IOT - Cuddalore","Cyclone Thane - Cuddalore"))
+  deseq_india
+
+  deseq_india <- prune_taxa(taxa_sums(deseq_india) > 0, deseq_india)
+  deseq_india
+```
+
+```{r}
+  deseq_pt <- phyloseq::subset_samples(ps, Description %in% 
+                                         c("2004IOT - Phra Thong", "2007 Storm"))
+  deseq_pt
+
+  deseq_pt <- prune_taxa(taxa_sums(deseq_pt) > 0, deseq_pt)
+  deseq_pt
+```
+
+```{r}
+  deseq_list2 <- list(deseq = c(deseq_india, deseq_pt), 
+                title = c("Cuddalore - 2004IOT vs Cyclone Thane", "Phra Thong - 2004IOT vs 2007 Storm"))
+```
+
+### 4.7.3 Create function to plot Deseq
+```{r, fig.width=8, fig.height=5}
+ps_do_deseq <- function(deseq_list2) {
+    
+    plot_array <- list()
+    
+    for (i in 1:length(deseq_list2$deseq)) {
+        deseq_data <- deseq_list2$deseq[[i]]
+  
+
+
+diagdds = phyloseq_to_deseq2(deseq_data, ~SampleType)
+
+# ps <- subset_samples(ps, strait %in% c('Singapore','Johor')) 
+# diagdds = phyloseq_to_deseq2(ps, ~ strait)
+
+# Block 1 Start Estimate geometric mean with zeros
+
+gm_mean = function(x, na.rm = TRUE) {
+    exp(sum(log(x[x > 0]), na.rm = na.rm)/length(x))
+}
+geoMeans = apply(counts(diagdds), 1, gm_mean)
+diagdds = estimateSizeFactors(diagdds, geoMeans = geoMeans)
+
+# Block 1 end
+
+diagdds = DESeq(diagdds, fitType = "local")
+
+res = results(diagdds, cooksCutoff = FALSE)
+alpha = 0.01
+sigtab = res[which(res$padj < alpha), ]
+summary(sigtab)
+
+# order sigtab according to adjusted pvalue and get the top 90
+sigtab <- sigtab[order(sigtab$padj), ]
+#sigtab <- sigtab[1:90, ]
+
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(ps)[rownames(sigtab),], "matrix"))
+    head(sigtab)
+
+sigtab_plot <- sigtab %>% 
+  rownames_to_column(var = "asv_code") %>%
+#  top_n(-90, wt = asv_code) %>%
+  mutate(label = case_when(Kingdom == "Eukaryota" ~ str_c(asv_code, Class, Genus, sep = "_"), TRUE ~ str_c(asv_code, Class, Genus, sep = "_")), supergroup_label = str_c(str_sub(Kingdom, 1, 1), Phylum, sep = "_")) %>%
+  arrange(desc(asv_code)) %>% 
+  rowid_to_column()
+
+saveRDS(sigtab_plot, file = str_c("./phyloseq/fig_final/sigtab_deseq_",deseq_list2$title[[i]],".rds"))
+
+# to get the colour name from viridis color map
+viridis(n=17, option="C")
+
+#change x-axis labeling from label to asv_code
+g <- ggplot(sigtab_plot, aes(x = reorder(label, log2FoldChange), y = log2FoldChange, 
+    color = Phylum, alpha = log(rowid))) + 
+  theme_dviz_grid() + 
+  geom_point(size = 6) + 
+  theme(axis.text.x = element_text(size = 5, angle = 0, hjust = 0.5, vjust = 0.5), 
+        axis.title.x = element_text(size = 20), axis.text.y = element_text(size = 16, 
+            angle = 0, hjust = 0, vjust = 0.5), legend.title = element_text(size = 24), 
+        legend.text = element_text(size = 20), 
+        panel.grid.major.y   = element_line(color = "grey60", size = 0.5),
+        panel.grid.minor.y   = element_line(color = "grey60", size = 0.5))+ 
+  theme(legend.position = "top", legend.box = "vertical") + guides(fill = guide_legend(title.position = "top", 
+        ncol = 6, nrow =3 , byrow = FALSE))+
+  theme(plot.margin = unit(c(1, 5, 1, 3), "cm")) + #top, right, bottom, left
+  ggtitle(deseq_list2$title[[2]]) +
+  guides(alpha = FALSE) + 
+  ylab("log2 fold change - Storm <--> 2004IOT") + 
+  xlab("") + 
+  scale_color_viridis_d(option = "C", name = "Phylum") + 
+  coord_flip()
+
+        
+        plot_array[[i]] <- g
+        
+        print(g)
+        
+    }
+    return(plot_array)
+  
+}
+```
+
+```{r, fig.width=8, fig.height=5}
+#plot_array_deseq<- ps_do_deseq(deseq_list2)
+```
+
+```{r}
+##ggsave(filename = "./phyloseq/fig_final/fig_deseq_tsu_storm_india_vlabel.pdf", plot_array_deseq[[1]], height = 20, width = 15, dpi = 300)
+
+##ggsave(filename = "./phyloseq/fig_final/fig_deseq_tsu_storm_pt_vlabel.pdf", plot_array_deseq[[2]], height = 20, width = 15, dpi = 300)
+
+##ggsave(filename = "./phyloseq/fig_final/fig_deseq_tsu_storm_pt_vlabel_top90.pdf", g, height = 20, width = 15, dpi = 300)
+
+```
+
+
+
+### 4.7.4 Heatmap
+
+#### 4.7.4.1 Load required libraries
+```{r}
+#install.packages("wesanderson")
+  library("wesanderson")    # colour palette for heatmap
+# names(wes_palettes) #view all palettes
+  library("gplots")         # to load heatmap.2
+
+```
+
+
+#### 4.7.4.2 for Cuddalore
+
+Reload the deseq result output from previous section
+```{r}
+  sigtab_india <- readRDS(file("./phyloseq/fig_final/sigtab_deseq_Cuddalore - 2004IOT vs Cyclone Thane.rds"))
+  sigtab_pt<- readRDS(file("./phyloseq/fig_final/sigtab_deseq_Phra Thong - 2004IOT vs 2007 Storm.rds"))
+  
+```
+
+```{r, fig.height = 5, fig.width=8}
+#  ========================================
+#  Create dataframe to plot 
+#  ======================================== 
+
+# reload the dataset when needed
+#ps_mod2<- readRDS(file("./phyloseq/fig_final/ps_mod2.rds"))
+
+#   filter the data
+deseq_asv_india2<- prune_taxa(sigtab_india$asv_code, ps_mod_india)
+summary(deseq_asv_india2@tax_table) #to check if I saved the right data
+
+deseq_asv_india2 <- subset_samples(deseq_asv_india2, !(SampleType %in% c("Ocean","Marine sediment","Lagoon","Intertidal","Beach")))
+  cat("\nPhyloseq All \n========== \n")
+  deseq_asv_india2
+
+#   normalize the data with median sequence number and transform with square root
+deseq_asv_india_trans = ps_transform(deseq_asv_india2, c("Deseq ASVs in Cuddalore"))  
+
+#   change into dataframe 
+df_asv_india<- data.frame(t(otu_table(deseq_asv_india_trans)), stringsAsFactors = FALSE) %>% rownames_to_column(var="sample")
+
+metadata_deseq_asv_india <- data.frame(sample_data(deseq_asv_india2), stringsAsFactors =FALSE) %>% rownames_to_column(var = "sample")
+
+df_asv_india_merged <- left_join(df_asv_india, metadata_deseq_asv_india, by="sample")
+
+
+#   add phylum to asv code and use it as colname for the matrix
+asv_taxa_india <- data.frame(t(tax_table(deseq_asv_india_trans)), stringsAsFactors =FALSE) %>% rownames_to_column(var = "sample")
+
+phylum<- asv_taxa_india[2, 2:93]
+class<- asv_taxa_india[3, 2:93]
+genus<- asv_taxa_india[5, 2:93]
+
+asv_code<- colnames(df_asv_india_merged[,2:93])
+#cnames<- str_c(asv_code, class, genus, sep = "_")
+cnames<- str_c(asv_code, phylum, sep="_")
+
+rnames<- df_asv_india_merged$SampleType
+mat_data<- data.matrix(df_asv_india_merged[,2:93])
+
+rownames(mat_data)<- rnames #assign first column of the matrix as rnames
+colnames(mat_data)<- cnames #assign the first row of the matrix as cnames
+
+#   calculate as relative abundances
+mat_data<- scale(mat_data, center=FALSE, scale=colSums(mat_data))
+mat_data<- t(mat_data)
+
+
+
+#  ========================================
+#  Setup color for the heatmap
+#  ======================================== 
+#   create colour range for the heatmap
+col_breaks = c(seq(0,0.3, length.out=10),
+               seq(0.31, 0.8, lenght.out=10),
+               seq(0.81, 0.99, lenght.out=10))
+#create the mid point at 0.04, the output from mean(mat_data)
+length(col_breaks) #number of color need to be 1 less than the length of the break
+
+pal <- wes_palette("Zissou1", 11, type = "continuous")
+pal <- as.character(pal)
+
+#  Denote different sample groupings with different colour 
+# the last colour black is to color if all failed
+color_map<- ifelse (colnames(mat_data)=="Soil and terrestrial samples", "#97B384",
+                    ifelse (colnames(mat_data)=="Tsunami deposit", "#DEC447",
+                            ifelse (colnames(mat_data)=="Storm deposit", "#CF6D2D",
+                                    "black")))
+
+#  Denote each phylum with different color 
+qual_col <- c("#457291", "#CF6D2D", "#97B384", "#DEC447", "#1E4650", "#8B4452", "#5BA2C9", "#F2A86A", "#96C5B1", "#D2C3EC")
+
+# convert existing colour palette into RGB
+getPalette = colorRampPalette(qual_col) 
+
+phylumList = unique(tax_table(ps_mod2)[, "Phylum"])
+phylumPalette = getPalette(length(phylumList))
+names(phylumPalette) = phylumList
+
+# assign phylumPalette to asv_code
+df_phylumPalette <- as.data.frame(phylumPalette, stringsAsFactors = FALSE) %>% rownames_to_column(var="Phylum")
+
+t_phylum <- as.data.frame(t(phylum)) 
+names(t_phylum)[names(t_phylum) == '2'] <- 'Phylum'
+
+df_phylumPalette_merged <- left_join(t_phylum, df_phylumPalette, by="Phylum")
+
+# extract the palette
+color_phylum<- as.character(df_phylumPalette_merged$phylumPalette)
+
+
+#  ========================================
+#   Create dendrogram
+#  ========================================
+#  define the distance and cluster based on our matrix data and method
+# for row
+distance<- dist(mat_data, method = "euclidean")
+cluster<- hclust(distance, method = "ward")
+
+#for column
+t.distance <- dist(t(mat_data), method = "euclidean")
+t.cluster <- hclust(t.distance, method = "ward") #using UPGMA as 
+
+
+#  ========================================
+#  Plotting
+#  ======================================== 
+
+# pdf("./phyloseq/fig_final/deseq_india_revised_label3_phylum.pdf", 
+#    width=3, height=6, pointsize = 8)
+
+heatmap.2(mat_data,
+         Rowv = as.dendrogram(cluster), #allow dendrograms
+         Colv = as.dendrogram(t.cluster),
+         #cellnote = mat_data,
+         scale = "none", #data scaling
+         trace = "none",
+         col = pal,
+         breaks = col_breaks,
+         symm= FALSE,
+         symbreaks = FALSE,
+         ColSideColors = color_map,
+         RowSideColors = color_phylum, 
+         cexRow = 0.5, #reduce the font size of the axis
+         cexCol = 0.5,
+         margins = c(5,10), #adjust the amount of white space surrounding your heatmap
+         key = TRUE,
+         key.xlab = "relative abundance",
+         keysize = 1,
+         density.info = c("none"),
+         #ylab = "SampleType",
+         #xlab = "ASV no.",
+         main = "Significant ASVs for 2004IOT in Cuddalore"
+          )
+
+# dev.off()
+
+```
+
+
+
+#### 4.7.4.3 for Phra Thong
+```{r, fig.height = 5, fig.width=8}
+#  ========================================
+#  Create dataframe to plot 
+#  ======================================== 
+# filter the data
+deseq_asv_pt2<- prune_taxa(sigtab_pt$asv_code, ps_mod_pt)
+summary(deseq_asv_pt2@tax_table) 
+
+deseq_asv_pt2 <- subset_samples(deseq_asv_pt2, !(SampleType %in% c("Ocean","Marine sediment","Lagoon","Intertidal","Beach")))
+  cat("\nPhyloseq All \n========== \n")
+  deseq_asv_pt2
+
+# there are 527ASVs and I couldn't display all of them on one heatmap - make separate plot for low abundances ASVs
+
+#   analyze the data structure  
+mean(taxa_sums(deseq_asv_pt2))  
+max(taxa_sums(deseq_asv_pt2))
+min(taxa_sums(deseq_asv_pt2))
+median(taxa_sums(deseq_asv_pt2))
+
+#   filter away taxa that have number of sequences below average - 263
+deseq_asv_pt3 <- prune_taxa(taxa_sums(deseq_asv_pt2) > 263, deseq_asv_pt2) 
+deseq_asv_pt3
+
+#   normalize the data with median sequence number and transform with square root
+deseq_asv_pt_trans = ps_transform(deseq_asv_pt3, c("Deseq ASVs in Phra Thong"))  
+
+#   change into dataframe 
+df_asv_pt<- data.frame(t(otu_table(deseq_asv_pt_trans)), stringsAsFactors = FALSE) %>% rownames_to_column(var="sample")
+
+metadata_deseq_asv_pt <- data.frame(sample_data(deseq_asv_pt3), stringsAsFactors =FALSE) %>% rownames_to_column(var = "sample")
+
+
+df_asv_pt_merged <- left_join(df_asv_pt, metadata_deseq_asv_pt, by="sample")
+
+
+#   add phylum to asv code and use it as colname for the matrix
+asv_taxa_pt <- data.frame(t(tax_table(deseq_asv_pt_trans)), stringsAsFactors =FALSE) %>% rownames_to_column(var = "sample")
+
+phylum_pt<- asv_taxa_pt[2,2:142]
+class_pt<- asv_taxa_pt[3,2:142]
+genus_pt<- asv_taxa_pt[5,2:142]
+
+asv_code_pt<- colnames(df_asv_pt_merged[,2:142])
+
+#cnames_pt<- str_c(asv_code_pt, class_pt, genus_pt, sep = "_")
+cnames_pt<- str_c(asv_code_pt, phylum_pt, sep="_")
+
+rnames_pt<- df_asv_pt_merged$SampleType
+mat_data_pt<- data.matrix(df_asv_pt_merged[,2:142]) 
+
+rownames(mat_data_pt)<- rnames_pt #assign first column of the matrix as rnames
+colnames(mat_data_pt)<- cnames_pt #assign the first row of the matrix as cnames
+
+#   calculate as relative abundances
+#the absolute number of observances become a fraction of the total observance in that sample
+mat_data_pt<- scale(mat_data_pt, center=FALSE, scale=colSums(mat_data_pt))
+mat_data_pt<- t(mat_data_pt)
+
+
+#  ========================================
+#  Setup color for the heatmap
+#  ======================================== 
+#  denote each sample group with different color
+#  create colour range for the heatmap
+col_breaks_pt = c(seq(0,0.49, length.out=10),
+               seq(0.5, 0.8, lenght.out=10),
+               seq(0.81, 0.99, lenght.out=10))
+#create the mid point at 0.04, the output from mean(mat_data)
+length(col_breaks_pt) #number of color need to be 1 less than the length of the break
+
+pal_pt <- wes_palette("Zissou1", 11, type = "continuous")
+pal_pt <- as.character(pal_pt)
+
+
+#   denote different groupings of the samples with different colour
+#the last colour black is to color if all failed
+color_map_pt<- ifelse (colnames(mat_data_pt)=="Soil and terrestrial samples", "#97B384",
+                    ifelse (colnames(mat_data_pt)=="Tsunami deposit", "#DEC447",
+                            ifelse (colnames(mat_data_pt)=="Storm deposit", "#CF6D2D",
+                                    "black")))
+
+#  denote each phylum with different color 
+# use the same color palette assigned to phylum in previous chunk - df_phylumPalette
+t_phylum_pt <- as.data.frame(t(phylum_pt)) 
+names(t_phylum_pt)[names(t_phylum_pt) == '2'] <- 'Phylum'
+
+df_phylumPalette_pt_merged <- left_join(t_phylum_pt, df_phylumPalette, by="Phylum")
+
+# extract the palette
+color_phylum_pt<- as.character(df_phylumPalette_pt_merged$phylumPalette)
+
+
+#  ========================================
+#   Create dendrogram
+#  ========================================
+#   define the distance and cluster based on our matrix data and method
+# for row
+distance_pt<- dist(mat_data_pt, method = "euclidean")
+cluster_pt<- hclust(distance_pt, method = "ward")
+
+#for column
+t.distance_pt <- dist(t(mat_data_pt), method = "euclidean")
+t.cluster_pt <- hclust(t.distance_pt, method = "ward") 
+
+
+#  ========================================
+#  Plotting
+#  ======================================== 
+
+# pdf("./phyloseq/fig_final/deseq_pt_col2_revised_label2_phylum.pdf", 
+#    width=3, height=6, pointsize = 8)
+
+heatmap.2(mat_data_pt,
+         Rowv = as.dendrogram(cluster_pt), #allow dendrograms
+         Colv = as.dendrogram(t.cluster_pt),
+         #cellnote = mat_data,
+         scale = "none", #data scaling
+         trace = "none",
+         col = pal_pt,
+         breaks = col_breaks_pt,
+         symm= FALSE,
+         symbreaks = FALSE,
+         ColSideColors = color_map_pt,
+         RowSideColors = color_phylum_pt,
+         cexRow = 0.5, #reduce the font size of the axis
+         cexCol = 0.5,
+         margins = c(5,10), #adjust the amount of white space surrounding your heatmap
+         key = TRUE,
+         key.xlab = "relative abundance",
+         keysize = 1,
+         #density.info = c("none"),
+         #ylab = "SampleType",
+         #xlab = "ASV no.",
+         main = "Significant ASVs for 2004IOT in Phra Thong island"
+          )
+
+#dev.off()
+```
+
+
+Heatmap for lower abundances ASVs
+```{r, fig.height = 5, fig.width=8}
+#  ========================================
+#  Create dataframe to plot 
+#  ======================================== 
+# filter away taxa that have number of sequences below average - 263
+deseq_asv_pt_low <- prune_taxa(taxa_sums(deseq_asv_pt2) < 264, deseq_asv_pt2)
+
+deseq_asv_pt_low
+
+
+#   normalize the data with median sequence number and transform with square root
+deseq_asv_pt_low_trans = ps_transform(deseq_asv_pt_low, c("Deseq ASVs in Phra Thong"))  
+
+#   change into dataframe 
+df_asv_pt_low<- data.frame(t(otu_table(deseq_asv_pt_low_trans)), stringsAsFactors = FALSE) %>% rownames_to_column(var="sample")
+
+metadata_deseq_asv_pt_low <- data.frame(sample_data(deseq_asv_pt_low), stringsAsFactors =FALSE) %>% rownames_to_column(var = "sample")
+
+
+df_asv_pt_low_merged <- left_join(df_asv_pt_low, metadata_deseq_asv_pt_low, by="sample")
+
+
+#   add phylum to asv code and use it as colname for the matrix
+asv_taxa_pt_low <- data.frame(t(tax_table(deseq_asv_pt_low_trans)), stringsAsFactors =FALSE) %>% rownames_to_column(var = "sample")
+
+phylum_pt_low<- asv_taxa_pt_low[2,2:386]
+asv_code_pt_low<- colnames(df_asv_pt_low_merged[,2:386])
+
+cnames_pt_low<- str_c(asv_code_pt_low, phylum_pt_low, sep="_")
+
+
+rnames_pt_low<- df_asv_pt_low_merged$SampleType
+mat_data_pt_low<- data.matrix(df_asv_pt_low_merged[,2:386]) 
+rownames(mat_data_pt_low)<- rnames_pt_low #assign first column of the matrix as rnames
+colnames(mat_data_pt_low)<- cnames_pt_low #assign the first row of the matrix as cnames
+
+#   calculate as relative abundances
+#the absolute number of observances become a fraction of the total observance in that sample
+mat_data_pt_low<- scale(mat_data_pt_low, center=FALSE, scale=colSums(mat_data_pt_low))
+mat_data_pt_low<- t(mat_data_pt_low)
+
+#  ========================================
+#  Setup color for the heatmap
+#  ======================================== 
+#   create colour range for the heatmap
+col_breaks_pt_low = c(seq(0,0.49, length.out=10),
+               seq(0.5, 0.8, lenght.out=10),
+               seq(0.81, 0.99, lenght.out=10))
+#create the mid point at 0.04, the output from mean(mat_data)
+length(col_breaks_pt_low) #number of color need to 1 less than the length of the break
+
+pal_pt_low <- wes_palette("Zissou1", 11, type = "continuous")
+pal_pt_low <- as.character(pal_pt_low)
+
+#   denote different groupings of the samples with different colour
+#the last colour black is to color if all failed
+color_map_pt_low<- ifelse (colnames(mat_data_pt_low)=="Soil and terrestrial samples", "#97B384",
+                    ifelse (colnames(mat_data_pt_low)=="Tsunami deposit", "#DEC447",
+                            ifelse (colnames(mat_data_pt_low)=="Storm deposit", "#CF6D2D",
+                                    "black")))
+
+#  denote each phylum with different color 
+# use the same color palette assigned to phylum in previous chunk - df_phylumPalette
+t_phylum_pt_low <- as.data.frame(t(phylum_pt_low)) 
+names(t_phylum_pt_low)[names(t_phylum_pt_low) == '2'] <- 'Phylum'
+
+df_phylumPalette_pt_low_merged <- left_join(t_phylum_pt_low, df_phylumPalette, by="Phylum")
+
+# extract the palette
+color_phylum_pt_low<- as.character(df_phylumPalette_pt_low_merged$phylumPalette)
+
+
+#  ========================================
+#   Create dendrogram
+#  ========================================
+#   define the distance and cluster based on our matrix data and method
+# for row
+distance_pt_low<- dist(mat_data_pt_low, method = "euclidean")
+cluster_pt_low<- hclust(distance_pt_low, method = "ward")
+
+# for column
+t.distance_pt_low <- dist(t(mat_data_pt_low), method = "euclidean")
+t.cluster_pt_low <- hclust(t.distance_pt_low, method = "ward") #using UPGMA as 
+
+
+#  ========================================
+#  Plotting
+#  ======================================== 
+#pdf("./phyloseq/fig_final/deseq_pt_col_low.pdf", 
+#    width=3, height=6, pointsize = 8)
+
+heatmap.2(mat_data_pt_low,
+         Rowv = as.dendrogram(cluster_pt_low), #allow dendrograms
+         Colv = as.dendrogram(t.cluster_pt_low),
+         #cellnote = mat_data,
+         scale = "none", #data scaling
+         trace = "none",
+         col = pal_pt_low,
+         breaks = col_breaks_pt_low,
+         symm= FALSE,
+         symbreaks = FALSE,
+         ColSideColors = color_map_pt_low,
+         RowSideColors = color_phylum_pt_low,
+         cexRow = 0.5, #reduce the font size of the axis
+         cexCol = 0.5,
+         margins = c(5,10), #adjust the amount of white space surrounding your heatmap
+         key = TRUE,
+         key.xlab = "relative abundance",
+         keysize = 1,
+         #density.info = c("none"),
+         #ylab = "SampleType",
+         #xlab = "ASV no.",
+         main = "Significant ASVs for 2004IOT in Phra Thong island - low abundance"
+          )
+
+#dev.off()
+```
+
+
+### 4.7.5 Rank abundance curve
+Load and install library
+```{r}
+# install.packages(pkgs=c("BiodiversityR", "vegan",
+#             "Rcmdr", "MASS", "mgcv",
+#             "cluster", "RODBC", "rpart", "effects", "multcomp",
+#             "ellipse", "maptree", "sp", "splancs", "spatial",
+#             "akima", "nnet", "dismo", "raster", "rgdal",
+#             "bootstrap", "PresenceAbsence",
+#             "maxlike", "gbm", "randomForest", "gam", "earth", "mda",
+#             "kernlab", "e1071", "glmnet", "sem", "rgl", "relimp",
+#             "lmtest", "leaps", "Hmisc", "colorspace", "aplpack",
+#             "abind", "XLConnect", "car", "markdown", "knitr",
+#             "geosphere", "maptools", "rgeos", "ENMeval", "red"),
+#             dependencies=c("Depends", "Imports"))
+
+library(BiodiversityR)
+
+```
+
+#### 4.7.5.1 for Cuddalore
+Convert from phyloseq to regular dataframe
+```{r}
+# BiodiversityR cannot process complex data
+# Make sure the first col starts with the data instead of sample name
+otu_df_ind <- data.frame(otu_table(ps_mod_india),stringsAsFactors =FALSE)
+otu_df_ind_t<- as.data.frame(t(as.matrix(otu_df_ind))) 
+    
+metadata_ind <- data.frame(sample_data(ps_mod_india), stringsAsFactors =FALSE) 
+```
+
+```{r}
+# change character to factor
+metadata_ind$Description <- as.factor(metadata_ind$Description)
+
+# calculate rank curve
+# here I am labelling top 10 asvs using sepcnames 1:10
+ra.data_ind<- BiodiversityR::rankabuncomp(x=otu_df_ind_t, y=metadata_ind, factor='Description', return.data=TRUE, specnames=c(1:10), scaledx=TRUE, legend=FALSE)
+
+# filter the data with proportion at 0.1 to represent the rare biosphere. 
+# proportion is calculated based on ASV abundances divided by the grouping total abundances
+# e.g. sum(Cyclone Thane$abundance) = 342000.3
+#     26559.4 / 342000.3 = 0.0776 = 7.8%
+ra.data_ind_rare<- ra.data_ind %>% filter(proportion <= 0.1)
+
+# create a new dataframe containing only the data we want to highlight
+highlight_df_ind <- ra.data_ind %>% filter(ra.data_ind$species %in% asv_code)
+
+
+# plot rank abundant curve
+plotgg2_ind <- ggplot(data=ra.data_ind, aes(x = rank, y = logabun)) + 
+    scale_x_continuous(expand=c(0, 1), sec.axis = dup_axis(labels=NULL, name=NULL)) +
+    scale_y_continuous(expand=c(0, 1), sec.axis = dup_axis(labels=NULL, name=NULL)) +
+    geom_line(aes(colour=Grouping), size=2) +
+    geom_point(data = highlight_df_ind, aes(x=rank, y=logabun), color="grey3", size=7) + # second geom_point for the new df with data to be highlighted
+    geom_hline(yintercept = 2.7) + # output from max(ra.data_ind_rare$logabun) filtered with proportion =< 0.1
+    facet_wrap(~Grouping) +
+    labs(x = "rank", y = "abundance (log)", colour = "Description3") +
+    scale_color_manual(values = qual_col) +
+    expand_limits(x=0, y=0) +
+    theme_bw(base_size = 22) +
+    theme(axis.text.y = element_text(size = rel(1.5))) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 0.5, size = rel(1.5))) + 
+    theme(strip.text.x = element_text(size=rel(1.5)))+
+    theme(legend.position = "top", legend.box = "vertical") +
+    theme(legend.box = "horizontal",
+          legend.title = element_blank(),
+          legend.text = element_text(size=rel(1)))+
+    guides(col = guide_legend(title.position = "top", ncol = 3, nrow = 4, byrow = TRUE))
+    
+plotgg2_ind
+
+```
+save plot
+```{r}
+# ggsave("./phyloseq/fig_final/fig_rank_ind_log.pdf", plotgg2_ind,
+#       height = 20, width = 20, dpi = 300)
+
+```
+
+
+#### 4.7.5.1 for Phra Thong
+Convert from phyloseq to regular dataframe
+```{r}
+# BiodiversityR cannot process complex data
+# Make sure the first col starts with the data instead of sample name
+otu_df_pt <- data.frame(otu_table(ps_mod_pt),stringsAsFactors =FALSE)
+otu_df_pt_t<- as.data.frame(t(as.matrix(otu_df_pt))) 
+    
+metadata_pt <- data.frame(sample_data(ps_mod_pt), stringsAsFactors =FALSE) 
+```
+
+```{r}
+# change character to factor
+metadata_pt$Description3 <- as.factor(metadata_pt$Description3)
+
+# calculate rank curve
+# here I am labelling top 10 asvs - sepcnames 1:10
+ra.data_pt<- BiodiversityR::rankabuncomp(x=otu_df_pt_t, y=metadata_pt, factor='Description3', return.data=TRUE, specnames=c(1:10), legend=FALSE)
+
+# filter the data with proportion at 0.1 to represent the rare biosphere. 
+ra.data_pt_rare<- ra.data_pt %>% filter(proportion <= 0.1)
+
+# create a new dataframe containing only the data we want to highlight
+highlight_df <- ra.data_pt %>% filter(ra.data_pt$species %in% asv_code_pt)
+
+# plot rank abundant curve
+plotgg2_pt <- ggplot(data=ra.data_pt, aes(x = rank, y = logabun)) + 
+    scale_x_continuous(expand=c(0, 1), sec.axis = dup_axis(labels=NULL, name=NULL)) +
+    scale_y_continuous(expand=c(0, 1), sec.axis = dup_axis(labels=NULL, name=NULL)) +
+    geom_line(aes(colour=Grouping), size=2) +
+    geom_point(data = highlight_df, aes(x=rank, y=logabun), color="grey3", size=7) + # second geom_point for the new df with data to be highlighted
+    scale_shape_manual(values=c(normal=16, special=8), guide="none")+
+    geom_hline(yintercept = 2.3) + # output from max(ra.data_pt_rare$logabun) filtered with proportion =< 0.1
+    facet_wrap(~Grouping) +
+    labs(x = "rank", y = "abundance (log)", colour = "Description3") +
+    scale_color_manual(values = qual_col) +
+    expand_limits(x=0, y=0) +
+    theme_bw(base_size = 22) +
+    theme(axis.text.y = element_text(size = rel(1.5))) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 0.5, size = rel(1.5))) + 
+    theme(strip.text.x = element_text(size=rel(1.5)))+
+    theme(legend.position = "top", legend.box = "vertical") +
+    theme(legend.box = "horizontal",
+          legend.title = element_blank(),
+          legend.text = element_text(size=rel(1)))+
+    guides(col = guide_legend(title.position = "top", ncol = 3, nrow = 4, byrow = TRUE))
+    
+plotgg2_pt
+
+```
+save plot
+```{r}
+# ggsave("./phyloseq/fig_final/fig_rank_pt_log.pdf", plotgg2_pt,
+#       height = 20, width = 20, dpi = 300)
+
+```
+
+#### Search for asv that were signature in palaeo data
+```{r}
+# palaeo_sign <- c("asv_015_00204", "asv_015_01454", "asv_015_01747", "asv_015_01995", "asv_015_02289", "asv_015_03245", "asv_015_03681", "asv_015_04496", "asv_015_02366", "asv_015_00590")
+
+# highlight_palaeo_pt <- ra.data_pt %>% filter(ra.data_pt$species %in% palaeo_sign)
+
+# highlight_highlight_palaeo_pt <- highlight_df %>% filter(highlight_df$species %in% palaeo_sign)
+
+# highlight_palaeo_cud <- ra.data_ind %>% filter(ra.data_ind$species %in% palaeo_sign)
+
+```
+
+## 4.8 Chemical plot
+```{r, echo=FALSE}
+
+       df_india_pt <- subset(sample_table, !Venue =="Palu")
+       df_mod <- subset(df_india_pt, Palaeo =="No")
+       chem_mod <- subset(df_mod, !(SampleType %in% c("Ocean", "Lagoon")))
+       
+       #rearrange the order of the factors
+        rearrange<- list("Tsunami deposit","Storm deposit","Soil and terrestrial samples","Intertidal","Beach","Marine sediment")
+       
+        chem_mod$SampleType<- factor(chem_mod$SampleType, levels=rearrange)
+       
+```
+
+
+### 4.8.1 Total carbon content
+```{r}
+pd = position_dodge(width = 0.5)
+
+carbo<- ggplot(chem_mod, mapping=aes(x=SampleType, y=C, color = SampleType)) + 
+  stat_boxplot (geom = "errorbar", position = pd, width = 0.2) + # this will create the whiskers
+        geom_boxplot(fill = "gray", width = 0.5, position = pd) +
+  #stat_summary(fun.y = mean, geom="point", size = 2) +
+  #stat_summary(fun.data = mean_se, geom="errorbar") +
+         geom_point(size = 3, position = position_jitter(w=0.2, h=0)) +
+         facet_wrap(~Venue, scales = "free") + 
+         scale_color_manual(values=c("Tsunami deposit"="#457291", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#DEC447", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+    ylab("Total organic carbon (%)") +
+    theme_bw() +
+    theme(plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+          axis.text=element_text(size=10),
+          axis.text.x = element_text(size = 10, angle = 90, hjust = 1, vjust = 0),
+               legend.title = element_blank(), 
+               legend.text = element_text(size = 10),
+               legend.position = "top", 
+          legend.box = "vertical",
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank())
+       
+print(carbo)
+```
+
+
+
+### 4.8.2 Total Nitrogen content
+```{r}
+pd = position_dodge(width = 0.5)
+
+nitro<- ggplot(chem_mod, mapping=aes(x=SampleType, y=N, color = SampleType)) + 
+  stat_boxplot (geom = "errorbar", position = pd, width = 0.2) + # this will create the whiskers
+        geom_boxplot(fill = "gray", width = 0.5, position = pd) +
+         geom_point(size = 3, position = position_jitter(w=0.2,h=0)) +
+         facet_wrap(~Venue, scales = "free") + 
+         scale_color_manual(values=c("Tsunami deposit"="#457291", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#DEC447", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+    ylab("Total nitrogen (%)") +
+    theme_bw() +
+    theme(plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+          axis.text=element_text(size=10),
+          axis.text.x = element_text(size = 10, angle = 90, hjust = 1, vjust = 0),
+               legend.title = element_blank(), 
+               legend.text = element_text(size = 10),
+               legend.position = "top", 
+          legend.box = "vertical",
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank())
+       
+print(nitro)
+```
+
+
+### 4.8.3 Total Sulfur content
+```{r}
+pd = position_dodge(width = 0.5)
+
+sulf<- ggplot(chem_mod, mapping=aes(x=SampleType, y=S, color = SampleType)) + 
+  stat_boxplot (geom = "errorbar", position = pd, width = 0.2) + # this will create the whiskers
+        geom_boxplot(fill = "gray", width = 0.5, position = pd) +
+         geom_point(size = 3, position = position_jitter(w=0.2,h=0)) +
+         facet_wrap(~Venue, scales = "free") + 
+         scale_color_manual(values=c("Tsunami deposit"="#457291", "Soil and terrestrial samples"="#97B384", "Storm deposit"="#CF6D2D", "Marine sediment"="#DEC447", "Beach"="#8B4452", "Intertidal"="#1E4650", "Lagoon"="#F2A86A", "Ocean"="#7DB8DC")) +
+    ylab("Total sulfur (%)") +
+    theme_bw() +
+    theme(plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+          axis.text=element_text(size=10),
+          axis.text.x = element_text(size = 10, angle = 90, hjust = 1, vjust = 0),
+               legend.title = element_blank(), 
+               legend.text = element_text(size = 10),
+               legend.position = "top", 
+          legend.box = "vertical",
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank())
+       
+print(sulf)
+```
+
+
+### 4.8.5Save plots as grid
+```{r}
+#    grid_fig_chem_boxplot <-  ggarrange(carbo, nitro, sulf,
+#                                align="hv",ncol=1, nrow=3,
+#                                common.legend = TRUE, legend = "top",
+#                                font.label = list(size=15))
+
+#    grid_fig_chem_boxplot
+    #ggsave("./phyloseq/fig_final/fig_chem.pdf", grid_fig_chem_boxplot, 
+    #      height = 30, width = 30, dpi = 300)
+    
+
+```
+
+
