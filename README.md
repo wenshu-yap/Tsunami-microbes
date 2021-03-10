@@ -6,3 +6,9 @@ Script and processed data for :
 
 
 Raw sequence data that support the finding of this study have been deposited in National Center for Biotechnology Information (NCBI) GenBank under the BioProject ID PRJNA343068 (https://www.=-\.nlm.nih.gov/bioproject/PRJNA343068). 
+
+## Directories
+
+* Script to produce phylose files and plots: phyloseq_16S_o15_final_6.0.Rmd
+* List of samples and description: Table S1.xlsx
+* Metadata with environmental data to process the phyloseq files: sample_data_.xlsx
