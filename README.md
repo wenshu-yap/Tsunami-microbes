@@ -12,3 +12,4 @@ Raw sequence data that support the finding of this study have been deposited in 
 * Script to produce phylose files and plots: phyloseq_16S_o15_final_6.0.Rmd
 * List of samples and description: Table S1.xlsx
 * Metadata with environmental data to process the phyloseq files: sample_data_.xlsx
+* R script to process raw data: script_dada2_silva_015.R
